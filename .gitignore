@@ -410,3 +410,5 @@ compile_commands.json
 /plan
 /enc_temp_folder
 canary-debug
+# Local Update Center snapshots
+/backups/update-center/

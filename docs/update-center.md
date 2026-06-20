@@ -1,0 +1,71 @@
+# Canary Update Center
+
+The update center manages the local Canary Docker stack, Canary source status,
+and the OTClient installation without replacing user data or silently
+overwriting customized client files.
+
+## Commands
+
+Run these commands from PowerShell:
+
+```powershell
+.\tools\update-center.ps1
+.\tools\update-center.ps1 -Action Backup
+.\tools\update-center.ps1 -Action UpdateSource
+.\tools\update-center.ps1 -Action UpdateServer
+.\tools\update-center.ps1 -Action UpdateClient
+.\tools\update-center.ps1 -Action UpdateAll
+.\tools\update-center.ps1 -Action RollbackClient
+```
+
+The default action is `Status` and does not install updates. Mutating actions
+ask for confirmation. Use `-Yes` only for scheduled unattended execution.
+
+## Server behavior
+
+Before recreating backend containers, the script backs up MariaDB and OTClient
+user data. It pulls the configured Docker images, recreates the backend
+services, reapplies Lua configuration overrides, deploys configured data-file
+overlays, and restarts the Canary service.
+
+Source updates are separate from runtime-image updates. `UpdateSource` only
+fast-forwards a clean local `main`; it refuses dirty worktrees, divergent
+history, and feature branches. It never resets, rebases, commits, or pushes.
+The personal fork is `origin`; the official OpenTibiaBR repository is
+`upstream`.
+
+## Client behavior
+
+The client updater uses official GitHub releases. It compares the installed
+files with the previous official release:
+
+- unchanged official files receive the new version;
+- locally modified files are preserved and reported as conflicts;
+- `%AppData%\Roaming\otcr\otclient\otclient` is never replaced;
+- every overwritten or removed file receives a rollback copy.
+
+Close `otclient.exe` before running `UpdateClient`.
+
+## Scheduling
+
+For a safe scheduled check, run only:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "\\wsl.localhost\Ubuntu\home\vgr19\canary\tools\update-center.ps1" -Action Status
+```
+
+Automatic installation should be enabled only after reviewing the status
+output and testing one manual update cycle.
+
+## Visual Studio Code
+
+Open `Canary-OTClient.code-workspace` to load the Canary repository and
+`C:\OTClient` in the same Explorer. Use `Terminal > Run Task` to access:
+
+- update status, backup, backend/client updates, and client rollback;
+- Docker stack start, stop, status, and Canary restart;
+- live Canary and OTClient logs;
+- OTClient launch and user-data folder access.
+
+Update tasks remain interactive and ask for confirmation before changing the
+runtime.

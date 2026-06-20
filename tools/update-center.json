@@ -1,0 +1,22 @@
+{
+  "canaryRoot": "\\\\wsl.localhost\\Ubuntu\\home\\vgr19\\canary",
+  "composeFile": "docker/docker-compose.yml",
+  "backupRoot": "backups/update-center",
+  "clientPath": "C:\\OTClient",
+  "clientUserDataPath": "C:\\Users\\vgr19\\AppData\\Roaming\\otcr\\otclient\\otclient",
+  "clientRepository": "opentibiabr/otclient",
+  "clientReleaseAsset": "otclient-windows-cmake-release.zip",
+  "assumedClientVersion": "4.1",
+  "statePath": "C:\\Users\\vgr19\\AppData\\Local\\CanaryUpdateCenter",
+  "dockerServices": [
+    "db",
+    "server",
+    "login-server"
+  ],
+  "serverLuaOverrides": {
+    "autoBank": "true"
+  },
+  "serverOverlayFiles": [
+    "data/XML/vocations.xml"
+  ]
+}

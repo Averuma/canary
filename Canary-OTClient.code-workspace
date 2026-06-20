@@ -1,0 +1,322 @@
+{
+  "folders": [
+    {
+      "name": "Canary Server",
+      "path": "."
+    },
+    {
+      "name": "OTClient",
+      "path": "C:\\OTClient"
+    }
+  ],
+  "settings": {
+    "files.exclude": {
+      "**/.git": true,
+      "**/build": true,
+      "**/cache": true,
+      "**/*.ilk": true,
+      "**/*.pdb": true
+    },
+    "search.exclude": {
+      "**/build": true,
+      "**/cache": true,
+      "**/backups": true,
+      "**/*.otmm": true,
+      "**/*.ilk": true,
+      "**/*.pdb": true
+    },
+    "git.autoRepositoryDetection": true,
+    "git.detectSubmodules": true,
+    "git.openRepositoryInParentFolders": "always",
+    "git.repositoryScanMaxDepth": 2,
+    "scm.countBadge": "all",
+    "terminal.integrated.cwd": "${workspaceFolder:Canary Server}"
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Git: Status both projects",
+        "type": "shell",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-Command",
+          "Write-Host '=== Canary ===' -ForegroundColor Cyan; git -C '${workspaceFolder:Canary Server}' status --short --branch; git -C '${workspaceFolder:Canary Server}' branch -vv; Write-Host \"`n=== OTClient ===\" -ForegroundColor Cyan; git -C '${workspaceFolder:OTClient}' status --short --branch; git -C '${workspaceFolder:OTClient}' branch -vv"
+        ],
+        "problemMatcher": [],
+        "presentation": {
+          "reveal": "always",
+          "panel": "dedicated",
+          "clear": true
+        }
+      },
+      {
+        "label": "Git: Fetch both projects",
+        "type": "shell",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-Command",
+          "git -C '${workspaceFolder:Canary Server}' fetch --prune --all; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }; git -C '${workspaceFolder:OTClient}' fetch --prune --all"
+        ],
+        "problemMatcher": [],
+        "presentation": {
+          "reveal": "always",
+          "panel": "dedicated",
+          "clear": true
+        }
+      },
+      {
+        "label": "Updates: Check everything",
+        "type": "shell",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "${workspaceFolder:Canary Server}\\tools\\update-center.ps1",
+          "-Action",
+          "Status"
+        ],
+        "problemMatcher": [],
+        "group": "test",
+        "presentation": {
+          "reveal": "always",
+          "panel": "dedicated",
+          "clear": true
+        }
+      },
+      {
+        "label": "Updates: Create backup",
+        "type": "shell",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "${workspaceFolder:Canary Server}\\tools\\update-center.ps1",
+          "-Action",
+          "Backup"
+        ],
+        "problemMatcher": [],
+        "presentation": {
+          "reveal": "always",
+          "panel": "dedicated",
+          "clear": true
+        }
+      },
+      {
+        "label": "Updates: Update Canary source",
+        "type": "shell",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "${workspaceFolder:Canary Server}\\tools\\update-center.ps1",
+          "-Action",
+          "UpdateSource"
+        ],
+        "problemMatcher": [],
+        "presentation": {
+          "reveal": "always",
+          "panel": "dedicated",
+          "clear": true
+        }
+      },
+      {
+        "label": "Updates: Update backend",
+        "type": "shell",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "${workspaceFolder:Canary Server}\\tools\\update-center.ps1",
+          "-Action",
+          "UpdateServer"
+        ],
+        "problemMatcher": [],
+        "presentation": {
+          "reveal": "always",
+          "panel": "dedicated",
+          "clear": true
+        }
+      },
+      {
+        "label": "Updates: Update OTClient",
+        "type": "shell",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "${workspaceFolder:Canary Server}\\tools\\update-center.ps1",
+          "-Action",
+          "UpdateClient"
+        ],
+        "problemMatcher": [],
+        "presentation": {
+          "reveal": "always",
+          "panel": "dedicated",
+          "clear": true
+        }
+      },
+      {
+        "label": "Updates: Update backend and client",
+        "type": "shell",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "${workspaceFolder:Canary Server}\\tools\\update-center.ps1",
+          "-Action",
+          "UpdateAll"
+        ],
+        "problemMatcher": [],
+        "presentation": {
+          "reveal": "always",
+          "panel": "dedicated",
+          "clear": true
+        }
+      },
+      {
+        "label": "Updates: Rollback OTClient",
+        "type": "shell",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "${workspaceFolder:Canary Server}\\tools\\update-center.ps1",
+          "-Action",
+          "RollbackClient"
+        ],
+        "problemMatcher": [],
+        "presentation": {
+          "reveal": "always",
+          "panel": "dedicated",
+          "clear": true
+        }
+      },
+      {
+        "label": "Server: Show containers",
+        "type": "shell",
+        "command": "docker",
+        "args": [
+          "compose",
+          "-f",
+          "${workspaceFolder:Canary Server}\\docker\\docker-compose.yml",
+          "ps"
+        ],
+        "problemMatcher": [],
+        "presentation": {
+          "reveal": "always",
+          "panel": "dedicated",
+          "clear": true
+        }
+      },
+      {
+        "label": "Server: Start stack",
+        "type": "shell",
+        "command": "docker",
+        "args": [
+          "compose",
+          "-f",
+          "${workspaceFolder:Canary Server}\\docker\\docker-compose.yml",
+          "up",
+          "-d"
+        ],
+        "problemMatcher": []
+      },
+      {
+        "label": "Server: Restart Canary",
+        "type": "shell",
+        "command": "docker",
+        "args": [
+          "restart",
+          "otbr-server-1"
+        ],
+        "problemMatcher": []
+      },
+      {
+        "label": "Server: Stop stack",
+        "type": "shell",
+        "command": "docker",
+        "args": [
+          "compose",
+          "-f",
+          "${workspaceFolder:Canary Server}\\docker\\docker-compose.yml",
+          "stop"
+        ],
+        "problemMatcher": []
+      },
+      {
+        "label": "Logs: Canary server",
+        "type": "shell",
+        "command": "docker",
+        "args": [
+          "logs",
+          "--follow",
+          "--tail",
+          "150",
+          "otbr-server-1"
+        ],
+        "isBackground": true,
+        "problemMatcher": [],
+        "presentation": {
+          "reveal": "always",
+          "panel": "dedicated",
+          "clear": true
+        }
+      },
+      {
+        "label": "Logs: OTClient",
+        "type": "shell",
+        "command": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-Command",
+          "Get-Content -LiteralPath 'C:\\OTClient\\otclient.log' -Tail 150 -Wait"
+        ],
+        "isBackground": true,
+        "problemMatcher": [],
+        "presentation": {
+          "reveal": "always",
+          "panel": "dedicated",
+          "clear": true
+        }
+      },
+      {
+        "label": "OTClient: Start",
+        "type": "process",
+        "command": "C:\\OTClient\\otclient.exe",
+        "options": {
+          "cwd": "C:\\OTClient"
+        },
+        "problemMatcher": [],
+        "presentation": {
+          "reveal": "never"
+        }
+      },
+      {
+        "label": "OTClient: Open user data",
+        "type": "process",
+        "command": "explorer.exe",
+        "args": [
+          "C:\\Users\\vgr19\\AppData\\Roaming\\otcr\\otclient\\otclient"
+        ],
+        "problemMatcher": []
+      }
+    ]
+  }
+}

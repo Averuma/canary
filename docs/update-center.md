@@ -16,6 +16,7 @@ Run these commands from PowerShell:
 .\tools\update-center.cmd -Action UpdateClient
 .\tools\update-center.cmd -Action UpdateAll
 .\tools\update-center.cmd -Action RollbackClient
+.\tools\update-center.cmd -Action FullWorkflow
 ```
 
 Running the command without arguments opens an interactive terminal menu.
@@ -49,6 +50,22 @@ branches, and synchronize them with their official sources:
 - publishing always uses the explicit current branch name on `origin`;
 - the updater never pushes to `origin/main` or to the official `upstream`;
 - operations stop when either worktree contains uncommitted changes.
+
+## Complete workflow
+
+Menu option `20`, or `-Action FullWorkflow`, runs the guarded sequence:
+
+1. version and Git status;
+2. clean-worktree and branch validation;
+3. MariaDB and OTClient user-data backup;
+4. Canary synchronization with `upstream/main`;
+5. OTClient synchronization with the latest official release;
+6. publication of both `dudantas/*` branches;
+7. backend Docker image update and Canary restart;
+8. final service, version, and Git verification.
+
+The cascade stops immediately when any phase fails. Destructive phases still
+request confirmation unless `-Yes` is explicitly supplied.
 
 ## Client behavior
 

@@ -20,7 +20,8 @@ param(
         "PublishBranches",
         "SyncCanaryGit",
         "SyncClientGit",
-        "SyncAndPublishGit"
+        "SyncAndPublishGit",
+        "FullWorkflow"
     )]
     [string]$Action = "Menu",
     [switch]$Yes
@@ -37,6 +38,7 @@ $stateRoot = $config.statePath
 $stateFile = Join-Path $stateRoot "state.json"
 $cacheRoot = Join-Path $stateRoot "cache"
 $githubHeaders = @{ "User-Agent" = "Canary-Update-Center" }
+$script:WorkflowConfirmed = $false
 
 New-Item -ItemType Directory -Force -Path $backupRoot, $stateRoot, $cacheRoot | Out-Null
 
@@ -58,7 +60,7 @@ function Invoke-Native {
 }
 
 function Confirm-Update([string]$Message) {
-    if ($Yes) {
+    if ($Yes -or $script:WorkflowConfirmed) {
         return
     }
     $answer = Read-Host "$Message [y/N]"
@@ -215,8 +217,13 @@ function Apply-ServerOverrides {
 }
 
 function Update-Server {
+    param([switch]$SkipBackup)
+
     Confirm-Update "Pull and recreate updated backend containers?"
-    $backup = New-GeneralBackup
+    $backup = $null
+    if (-not $SkipBackup) {
+        $backup = New-GeneralBackup
+    }
     Write-Step "Updating backend containers"
     Push-Location $canaryRoot
     try {
@@ -232,7 +239,11 @@ function Update-Server {
     Invoke-Native docker @("restart", "otbr-server-1")
     Start-Sleep -Seconds 5
     Invoke-Native docker @("exec", "otbr-server-1", "sh", "-lc", "grep -n '^autoBank' /canary/config.lua")
-    Write-Host "Backend updated. Backup: $backup" -ForegroundColor Green
+    if ($backup) {
+        Write-Host "Backend updated. Backup: $backup" -ForegroundColor Green
+    } else {
+        Write-Host "Backend updated." -ForegroundColor Green
+    }
 }
 
 function Update-Source {
@@ -608,6 +619,62 @@ function Sync-And-PublishGit($State) {
     Publish-WorkingBranches
 }
 
+function Invoke-FullWorkflow($State) {
+    Write-Host "This workflow will:" -ForegroundColor Cyan
+    Write-Host "  1. Check versions and Git status"
+    Write-Host "  2. Require clean Canary and OTClient worktrees"
+    Write-Host "  3. Back up MariaDB and OTClient user data"
+    Write-Host "  4. Synchronize Canary with upstream/main"
+    Write-Host "  5. Synchronize OTClient with the latest official release"
+    Write-Host "  6. Publish both dudantas/* branches to your GitHub"
+    Write-Host "  7. Update backend Docker images and restart Canary"
+    Write-Host "  8. Run a final status check"
+    Write-Host ""
+    Confirm-Update "Run the complete update workflow?"
+    $script:WorkflowConfirmed = $true
+
+    try {
+        Write-Step "Phase 1/8 - Current status"
+        Get-CanaryStatus
+        Get-ClientStatus $State
+        Show-GitStatus
+
+        Write-Step "Phase 2/8 - Safety checks"
+        Assert-CleanGitWorktree $canaryRoot "Canary"
+        Assert-CleanGitWorktree $config.clientPath "OTClient"
+        Assert-WorkingBranch $canaryRoot "Canary" | Out-Null
+        Assert-WorkingBranch $config.clientPath "OTClient" | Out-Null
+        Write-Host "Both worktrees are clean and on working branches." -ForegroundColor Green
+
+        Write-Step "Phase 3/8 - Backup"
+        $backup = New-GeneralBackup
+        Write-Host "Backup completed: $backup" -ForegroundColor Green
+
+        Write-Step "Phase 4/8 - Canary source synchronization"
+        Sync-CanaryGit
+
+        Write-Step "Phase 5/8 - OTClient release synchronization"
+        Sync-ClientGit $State
+
+        Write-Step "Phase 6/8 - GitHub publication"
+        Publish-WorkingBranches
+
+        Write-Step "Phase 7/8 - Backend runtime update"
+        Update-Server -SkipBackup
+
+        Write-Step "Phase 8/8 - Final verification"
+        Get-CanaryStatus
+        Get-ClientStatus $State
+        Show-ServerStatus
+        Show-GitStatus
+        Save-State $State
+
+        Write-Host "`nComplete workflow finished successfully." -ForegroundColor Green
+    } finally {
+        $script:WorkflowConfirmed = $false
+    }
+}
+
 function Invoke-UpdateCenterAction {
     param(
         [Parameter(Mandatory)][string]$SelectedAction,
@@ -676,6 +743,9 @@ function Invoke-UpdateCenterAction {
         "SyncAndPublishGit" {
             Sync-And-PublishGit $State
         }
+        "FullWorkflow" {
+            Invoke-FullWorkflow $State
+        }
     }
 }
 
@@ -702,6 +772,7 @@ function Show-InteractiveMenu {
         "17" = @{ Action = "SyncCanaryGit"; Label = "Merge official Canary updates into current branch" }
         "18" = @{ Action = "SyncClientGit"; Label = "Merge latest OTClient release into current branch" }
         "19" = @{ Action = "SyncAndPublishGit"; Label = "Sync and publish both projects" }
+        "20" = @{ Action = "FullWorkflow"; Label = "Run complete safe update workflow" }
     }
 
     while ($true) {

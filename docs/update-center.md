@@ -38,6 +38,18 @@ fast-forwards a clean local `main` or merges `upstream/main` into a clean
 names. It never resets, rebases, commits unrelated changes, or pushes. The
 personal fork is `origin`; the official OpenTibiaBR repository is `upstream`.
 
+## GitHub workflow
+
+The interactive menu can show both repositories, publish both working
+branches, and synchronize them with their official sources:
+
+- Canary merges `upstream/main` into the current `dudantas/*` branch;
+- OTClient merges the latest official release tag into its current
+  `dudantas/*` branch;
+- publishing always uses the explicit current branch name on `origin`;
+- the updater never pushes to `origin/main` or to the official `upstream`;
+- operations stop when either worktree contains uncommitted changes.
+
 ## Client behavior
 
 The client updater uses official GitHub releases. It compares the installed

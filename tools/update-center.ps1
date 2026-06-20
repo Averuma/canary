@@ -15,7 +15,12 @@ param(
         "StopServer",
         "ServerLogs",
         "StartClient",
-        "ClientLogs"
+        "ClientLogs",
+        "GitStatus",
+        "PublishBranches",
+        "SyncCanaryGit",
+        "SyncClientGit",
+        "SyncAndPublishGit"
     )]
     [string]$Action = "Menu",
     [switch]$Yes
@@ -474,6 +479,135 @@ function Show-ClientLogs {
     Get-Content -LiteralPath $logPath -Tail 150 -Wait
 }
 
+function Assert-CleanGitWorktree {
+    param(
+        [Parameter(Mandatory)][string]$Repository,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    $changes = @(& git -C $Repository status --porcelain)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to read Git status for $Label."
+    }
+    if ($changes.Count -gt 0) {
+        Write-Host "$Label has uncommitted changes:" -ForegroundColor Yellow
+        $changes | ForEach-Object { Write-Host "  $_" }
+        throw "Commit or discard these changes before synchronizing Git."
+    }
+}
+
+function Get-CurrentGitBranch {
+    param([Parameter(Mandatory)][string]$Repository)
+
+    $branch = (& git -C $Repository branch --show-current).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $branch) {
+        throw "Unable to determine the current Git branch in $Repository."
+    }
+    return $branch
+}
+
+function Assert-WorkingBranch {
+    param(
+        [Parameter(Mandatory)][string]$Repository,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    $branch = Get-CurrentGitBranch $Repository
+    if ($branch -notlike "dudantas/*") {
+        throw "$Label must be on a dudantas/* working branch. Current branch: $branch"
+    }
+    return $branch
+}
+
+function Show-GitStatus {
+    Write-Step "Canary Git"
+    Invoke-Native git @("-C", $canaryRoot, "status", "--short", "--branch")
+    Invoke-Native git @("-C", $canaryRoot, "branch", "-vv")
+    Write-Host ""
+    Invoke-Native git @("-C", $canaryRoot, "remote", "-v")
+
+    Write-Step "OTClient Git"
+    Invoke-Native git @("-C", $config.clientPath, "status", "--short", "--branch")
+    Invoke-Native git @("-C", $config.clientPath, "branch", "-vv")
+    Write-Host ""
+    Invoke-Native git @("-C", $config.clientPath, "remote", "-v")
+}
+
+function Publish-GitBranch {
+    param(
+        [Parameter(Mandatory)][string]$Repository,
+        [Parameter(Mandatory)][string]$Label
+    )
+
+    Assert-CleanGitWorktree $Repository $Label
+    $branch = Assert-WorkingBranch $Repository $Label
+    Write-Step "Publishing $Label branch $branch"
+    Invoke-Native git @("-C", $Repository, "push", "-u", "origin", "HEAD:$branch")
+}
+
+function Publish-WorkingBranches {
+    Publish-GitBranch $canaryRoot "Canary"
+    Publish-GitBranch $config.clientPath "OTClient"
+}
+
+function Sync-CanaryGit {
+    Assert-CleanGitWorktree $canaryRoot "Canary"
+    $branch = Assert-WorkingBranch $canaryRoot "Canary"
+
+    Write-Step "Fetching official Canary updates"
+    Invoke-Native git @("-C", $canaryRoot, "fetch", "--prune", "upstream")
+    Invoke-Native git @("-C", $canaryRoot, "fetch", "--prune", "origin")
+
+    Write-Step "Refreshing local Canary main"
+    Invoke-Native git @("-C", $canaryRoot, "switch", "main")
+    try {
+        Invoke-Native git @("-C", $canaryRoot, "merge", "--ff-only", "upstream/main")
+    } finally {
+        Invoke-Native git @("-C", $canaryRoot, "switch", $branch)
+    }
+
+    $behind = (& git -C $canaryRoot rev-list --count "HEAD..upstream/main").Trim()
+    if ([int]$behind -eq 0) {
+        Write-Host "$branch already contains upstream/main."
+        return
+    }
+
+    Confirm-Update "Merge $behind official Canary commit(s) into $branch?"
+    Invoke-Native git @("-C", $canaryRoot, "merge", "--no-edit", "upstream/main")
+    Write-Host "Canary branch synchronized. Review and test it before publishing." -ForegroundColor Green
+}
+
+function Sync-ClientGit($State) {
+    Assert-CleanGitWorktree $config.clientPath "OTClient"
+    $branch = Assert-WorkingBranch $config.clientPath "OTClient"
+    $release = Get-LatestClientRelease
+    $tag = [string]$release.tag_name
+
+    Write-Step "Fetching official OTClient release $tag"
+    Invoke-Native git @("-C", $config.clientPath, "fetch", "--prune", "upstream", "--tags")
+    Invoke-Native git @("-C", $config.clientPath, "fetch", "--prune", "origin")
+
+    & git -C $config.clientPath merge-base --is-ancestor "refs/tags/$tag" HEAD
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "$branch already contains official release $tag."
+        return
+    }
+
+    Confirm-Update "Merge official OTClient release $tag into $branch?"
+    Invoke-Native git @("-C", $config.clientPath, "merge", "--no-edit", "refs/tags/$tag")
+    $State.clientVersion = $tag
+    Save-State $State
+    Write-Host "OTClient branch synchronized with release $tag. Review and test it before publishing." -ForegroundColor Green
+}
+
+function Sync-And-PublishGit($State) {
+    Assert-CleanGitWorktree $canaryRoot "Canary"
+    Assert-CleanGitWorktree $config.clientPath "OTClient"
+    Sync-CanaryGit
+    Sync-ClientGit $State
+    Publish-WorkingBranches
+}
+
 function Invoke-UpdateCenterAction {
     param(
         [Parameter(Mandatory)][string]$SelectedAction,
@@ -527,6 +661,21 @@ function Invoke-UpdateCenterAction {
         "ClientLogs" {
             Show-ClientLogs
         }
+        "GitStatus" {
+            Show-GitStatus
+        }
+        "PublishBranches" {
+            Publish-WorkingBranches
+        }
+        "SyncCanaryGit" {
+            Sync-CanaryGit
+        }
+        "SyncClientGit" {
+            Sync-ClientGit $State
+        }
+        "SyncAndPublishGit" {
+            Sync-And-PublishGit $State
+        }
     }
 }
 
@@ -548,6 +697,11 @@ function Show-InteractiveMenu {
         "12" = @{ Action = "ServerLogs"; Label = "Follow Canary server logs" }
         "13" = @{ Action = "StartClient"; Label = "Start OTClient" }
         "14" = @{ Action = "ClientLogs"; Label = "Follow OTClient logs" }
+        "15" = @{ Action = "GitStatus"; Label = "Show Git status for both projects" }
+        "16" = @{ Action = "PublishBranches"; Label = "Publish both current branches to GitHub" }
+        "17" = @{ Action = "SyncCanaryGit"; Label = "Merge official Canary updates into current branch" }
+        "18" = @{ Action = "SyncClientGit"; Label = "Merge latest OTClient release into current branch" }
+        "19" = @{ Action = "SyncAndPublishGit"; Label = "Sync and publish both projects" }
     }
 
     while ($true) {
@@ -587,5 +741,10 @@ $state = Get-State
 if ($Action -eq "Menu") {
     Show-InteractiveMenu $state
 } else {
-    Invoke-UpdateCenterAction -SelectedAction $Action -State $state
+    try {
+        Invoke-UpdateCenterAction -SelectedAction $Action -State $state
+    } catch {
+        Write-Host "Operation failed: $($_.Exception.Message)" -ForegroundColor Red
+        exit 1
+    }
 }

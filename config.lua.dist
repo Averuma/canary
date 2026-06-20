@@ -301,7 +301,7 @@ onlyPremiumAccount = false
 -- NOTE: enableSupportOutfit enable GODS and GMS to select support outfit (gamemaster, customer support or community manager)
 depotChest = 4
 autoLoot = false
-autoBank = false
+autoBank = true
 toggleGoldPouchAllowAnything = false
 toggleGoldPouchQuickLootOnly = false
 toggleServerIsRetroPVP = false

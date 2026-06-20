@@ -140,11 +140,36 @@ function Get-ReleaseByTag([string]$Tag) {
 }
 
 function Get-RemoteImageId([string]$Image) {
-    $output = & docker buildx imagetools inspect $Image --format "{{json .Manifest.Digest}}" 2>$null
-    if ($LASTEXITCODE -ne 0 -or -not $output) {
-        return $null
+    $cacheName = "docker-" + ($Image -replace "[^a-zA-Z0-9.-]", "_") + ".txt"
+    $cacheFile = Join-Path $cacheRoot $cacheName
+
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $output = & docker buildx imagetools inspect $Image --format "{{json .Manifest.Digest}}" 2>$null
+            $exitCode = $LASTEXITCODE
+        } catch {
+            $output = $null
+            $exitCode = 1
+        } finally {
+            $ErrorActionPreference = $previousPreference
+        }
+
+        if ($exitCode -eq 0 -and $output) {
+            $digest = ($output -replace '"', '').Trim()
+            Set-Content -LiteralPath $cacheFile -Value $digest -Encoding ASCII
+            return $digest
+        }
+        if ($attempt -lt 3) {
+            Start-Sleep -Seconds (2 * $attempt)
+        }
     }
-    return ($output -replace '"', '').Trim()
+
+    if (Test-Path -LiteralPath $cacheFile) {
+        return (Get-Content -LiteralPath $cacheFile -Raw).Trim()
+    }
+    return $null
 }
 
 function Get-LocalImageId([string]$Image) {
@@ -286,6 +311,23 @@ function Wait-ContainerHealthy {
     throw "Container $Container did not become healthy within $TimeoutSeconds seconds."
 }
 
+function Wait-CanaryOnline {
+    param([int]$TimeoutSeconds = 300)
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $startedAt = & docker inspect otbr-server-1 --format "{{.State.StartedAt}}" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $startedAt) {
+            $logs = & docker logs --since $startedAt.Trim() otbr-server-1 2>&1
+            if ($logs -match "Canary server online!") {
+                return
+            }
+        }
+        Start-Sleep -Seconds 3
+    }
+    throw "Canary did not report an online state within $TimeoutSeconds seconds."
+}
+
 function Update-Server {
     param(
         [switch]$SkipBackup,
@@ -314,18 +356,20 @@ function Update-Server {
     if ($services -contains "db") {
         Write-Step "Waiting for MariaDB"
         Wait-ContainerHealthy "otbr-db-1"
-    } else {
-        Start-Sleep -Seconds 5
     }
 
     if ($services -contains "server") {
+        Write-Step "Waiting for initial Canary startup"
+        Wait-CanaryOnline
         Apply-ServerOverrides
         Invoke-Native docker @("restart", "otbr-server-1")
-        Start-Sleep -Seconds 5
+        Write-Step "Waiting for Canary restart"
+        Wait-CanaryOnline
         Invoke-Native docker @("exec", "otbr-server-1", "sh", "-lc", "grep -n '^autoBank' /canary/config.lua")
     } elseif ($services -contains "db") {
         Invoke-Native docker @("restart", "otbr-server-1")
-        Start-Sleep -Seconds 5
+        Write-Step "Waiting for Canary restart"
+        Wait-CanaryOnline
     }
     if ($backup) {
         Write-Host "Backend updated. Backup: $backup" -ForegroundColor Green

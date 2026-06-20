@@ -9,17 +9,19 @@ overwriting customized client files.
 Run these commands from PowerShell:
 
 ```powershell
-.\tools\update-center.ps1
-.\tools\update-center.ps1 -Action Backup
-.\tools\update-center.ps1 -Action UpdateSource
-.\tools\update-center.ps1 -Action UpdateServer
-.\tools\update-center.ps1 -Action UpdateClient
-.\tools\update-center.ps1 -Action UpdateAll
-.\tools\update-center.ps1 -Action RollbackClient
+.\tools\update-center.cmd
+.\tools\update-center.cmd -Action Backup
+.\tools\update-center.cmd -Action UpdateSource
+.\tools\update-center.cmd -Action UpdateServer
+.\tools\update-center.cmd -Action UpdateClient
+.\tools\update-center.cmd -Action UpdateAll
+.\tools\update-center.cmd -Action RollbackClient
 ```
 
 The default action is `Status` and does not install updates. Mutating actions
 ask for confirmation. Use `-Yes` only for scheduled unattended execution.
+The `.cmd` launcher applies `ExecutionPolicy Bypass` only to that invocation,
+without changing the user's permanent PowerShell policy.
 
 ## Server behavior
 

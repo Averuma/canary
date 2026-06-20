@@ -22,7 +22,8 @@ local deposit = TalkAction("!deposit")
 
 function deposit.onSay(player, words, param)
 	local amount
-	if param == "all" then
+	local silent = param == "auto"
+	if param == "all" or silent then
 		amount = player:getMoney()
 	else
 		amount = tonumber(param)
@@ -32,12 +33,21 @@ function deposit.onSay(player, words, param)
 		end
 	end
 
+	if amount <= 0 then
+		return true
+	end
+
 	if not Bank.deposit(player, amount) then
+		if silent then
+			return true
+		end
 		player:sendTextMessage(config.messageStyle, "You don't have enough money.")
 		return true
 	end
 
-	player:sendTextMessage(config.messageStyle, "You have deposited " .. FormatNumber(amount) .. " gold coins.")
+	if not silent then
+		player:sendTextMessage(config.messageStyle, "You have deposited " .. FormatNumber(amount) .. " gold coins.")
+	end
 	return true
 end
 

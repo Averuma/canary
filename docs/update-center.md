@@ -18,8 +18,10 @@ Run these commands from PowerShell:
 .\tools\update-center.cmd -Action RollbackClient
 ```
 
-The default action is `Status` and does not install updates. Mutating actions
-ask for confirmation. Use `-Yes` only for scheduled unattended execution.
+Running the command without arguments opens an interactive terminal menu.
+Direct `-Action` commands remain available for VS Code tasks and automation.
+Mutating actions ask for confirmation. Use `-Yes` only for scheduled
+unattended execution.
 The `.cmd` launcher applies `ExecutionPolicy Bypass` only to that invocation,
 without changing the user's permanent PowerShell policy.
 
@@ -30,11 +32,11 @@ user data. It pulls the configured Docker images, recreates the backend
 services, reapplies Lua configuration overrides, deploys configured data-file
 overlays, and restarts the Canary service.
 
-Source updates are separate from runtime-image updates. `UpdateSource` only
-fast-forwards a clean local `main`; it refuses dirty worktrees, divergent
-history, and feature branches. It never resets, rebases, commits, or pushes.
-The personal fork is `origin`; the official OpenTibiaBR repository is
-`upstream`.
+Source updates are separate from runtime-image updates. `UpdateSource`
+fast-forwards a clean local `main` or merges `upstream/main` into a clean
+`dudantas/*` working branch. It refuses dirty worktrees and unrelated branch
+names. It never resets, rebases, commits unrelated changes, or pushes. The
+personal fork is `origin`; the official OpenTibiaBR repository is `upstream`.
 
 ## Client behavior
 

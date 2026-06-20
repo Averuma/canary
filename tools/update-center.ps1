@@ -1,7 +1,23 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("Status", "Backup", "UpdateSource", "UpdateServer", "UpdateClient", "UpdateAll", "RollbackClient")]
-    [string]$Action = "Status",
+    [ValidateSet(
+        "Menu",
+        "Status",
+        "Backup",
+        "UpdateSource",
+        "UpdateServer",
+        "UpdateClient",
+        "UpdateAll",
+        "RollbackClient",
+        "ServerStatus",
+        "StartServer",
+        "RestartServer",
+        "StopServer",
+        "ServerLogs",
+        "StartClient",
+        "ClientLogs"
+    )]
+    [string]$Action = "Menu",
     [switch]$Yes
 )
 
@@ -225,12 +241,12 @@ function Update-Source {
     }
 
     $branch = (& git -c "safe.directory=$canaryRoot" -C $canaryRoot branch --show-current).Trim()
-    if ($branch -ne "main") {
-        throw "Automatic source update only fast-forwards local main. Current branch: $branch"
+    if ($branch -ne "main" -and $branch -notlike "dudantas/*") {
+        throw "Source synchronization is allowed only on main or dudantas/* branches. Current branch: $branch"
     }
 
     $distance = (& git -c "safe.directory=$canaryRoot" -C $canaryRoot rev-list --left-right --count "HEAD...upstream/main").Trim() -split "\s+"
-    if ([int]$distance[0] -gt 0) {
+    if ($branch -eq "main" -and [int]$distance[0] -gt 0) {
         throw "Local main contains commits not present on upstream/main; refusing to rewrite history."
     }
     if ([int]$distance[1] -eq 0) {
@@ -238,9 +254,16 @@ function Update-Source {
         return
     }
 
-    Confirm-Update "Fast-forward Canary source by $($distance[1]) commit(s)?"
-    Invoke-Native git @("-c", "safe.directory=$canaryRoot", "-C", $canaryRoot, "merge", "--ff-only", "upstream/main")
-    Write-Host "Canary source updated by fast-forward." -ForegroundColor Green
+    if ($branch -eq "main") {
+        Confirm-Update "Fast-forward Canary source by $($distance[1]) commit(s)?"
+        Invoke-Native git @("-c", "safe.directory=$canaryRoot", "-C", $canaryRoot, "merge", "--ff-only", "upstream/main")
+        Write-Host "Canary source updated by fast-forward." -ForegroundColor Green
+        return
+    }
+
+    Confirm-Update "Merge $($distance[1]) upstream commit(s) into $branch?"
+    Invoke-Native git @("-c", "safe.directory=$canaryRoot", "-C", $canaryRoot, "merge", "--no-edit", "upstream/main")
+    Write-Host "Official Canary updates merged into $branch." -ForegroundColor Green
 }
 
 function Get-Archive([string]$Version, $Asset) {
@@ -401,31 +424,168 @@ function Rollback-Client($State) {
     Write-Host "OTClient rolled back to $($manifest.fromVersion)." -ForegroundColor Green
 }
 
+function Show-ServerStatus {
+    Write-Step "Docker services"
+    Invoke-Native docker @("compose", "-f", $composeFile, "ps")
+}
+
+function Start-Server {
+    Write-Step "Starting backend stack"
+    Invoke-Native docker @("compose", "-f", $composeFile, "up", "-d")
+    Show-ServerStatus
+}
+
+function Restart-Server {
+    Write-Step "Restarting Canary server"
+    Invoke-Native docker @("restart", "otbr-server-1")
+    Show-ServerStatus
+}
+
+function Stop-Server {
+    Confirm-Update "Stop the backend stack?"
+    Write-Step "Stopping backend stack"
+    Invoke-Native docker @("compose", "-f", $composeFile, "stop")
+}
+
+function Show-ServerLogs {
+    Write-Host "Press Ctrl+C to leave the live server log." -ForegroundColor Yellow
+    Invoke-Native docker @("logs", "--follow", "--tail", "150", "otbr-server-1")
+}
+
+function Start-Client {
+    $clientExecutable = Join-Path $config.clientPath "otclient.exe"
+    if (-not (Test-Path -LiteralPath $clientExecutable)) {
+        throw "OTClient executable not found: $clientExecutable"
+    }
+    if (Get-Process -Name "otclient" -ErrorAction SilentlyContinue) {
+        Write-Host "OTClient is already running."
+        return
+    }
+    Start-Process -FilePath $clientExecutable -WorkingDirectory $config.clientPath
+    Write-Host "OTClient started." -ForegroundColor Green
+}
+
+function Show-ClientLogs {
+    $logPath = Join-Path $config.clientPath "otclient.log"
+    if (-not (Test-Path -LiteralPath $logPath)) {
+        throw "OTClient log not found: $logPath"
+    }
+    Write-Host "Press Ctrl+C to leave the live client log." -ForegroundColor Yellow
+    Get-Content -LiteralPath $logPath -Tail 150 -Wait
+}
+
+function Invoke-UpdateCenterAction {
+    param(
+        [Parameter(Mandatory)][string]$SelectedAction,
+        [Parameter(Mandatory)]$State
+    )
+
+    switch ($SelectedAction) {
+        "Status" {
+            Get-CanaryStatus
+            Get-ClientStatus $State
+            Save-State $State
+        }
+        "Backup" {
+            $destination = New-GeneralBackup
+            Write-Host "Backup completed: $destination" -ForegroundColor Green
+        }
+        "UpdateSource" {
+            Update-Source
+        }
+        "UpdateServer" {
+            Update-Server
+        }
+        "UpdateClient" {
+            Update-Client $State
+        }
+        "UpdateAll" {
+            Update-Server
+            Update-Client $State
+        }
+        "RollbackClient" {
+            Rollback-Client $State
+        }
+        "ServerStatus" {
+            Show-ServerStatus
+        }
+        "StartServer" {
+            Start-Server
+        }
+        "RestartServer" {
+            Restart-Server
+        }
+        "StopServer" {
+            Stop-Server
+        }
+        "ServerLogs" {
+            Show-ServerLogs
+        }
+        "StartClient" {
+            Start-Client
+        }
+        "ClientLogs" {
+            Show-ClientLogs
+        }
+    }
+}
+
+function Show-InteractiveMenu {
+    param([Parameter(Mandatory)]$State)
+
+    $menu = [ordered]@{
+        "1" = @{ Action = "Status"; Label = "Check all updates and versions" }
+        "2" = @{ Action = "Backup"; Label = "Create database and OTClient backup" }
+        "3" = @{ Action = "UpdateSource"; Label = "Sync current Canary branch with official upstream" }
+        "4" = @{ Action = "UpdateServer"; Label = "Update backend Docker images" }
+        "5" = @{ Action = "UpdateClient"; Label = "Update OTClient official release" }
+        "6" = @{ Action = "UpdateAll"; Label = "Update backend and OTClient" }
+        "7" = @{ Action = "RollbackClient"; Label = "Rollback last OTClient update" }
+        "8" = @{ Action = "ServerStatus"; Label = "Show backend services" }
+        "9" = @{ Action = "StartServer"; Label = "Start backend stack" }
+        "10" = @{ Action = "RestartServer"; Label = "Restart Canary server" }
+        "11" = @{ Action = "StopServer"; Label = "Stop backend stack" }
+        "12" = @{ Action = "ServerLogs"; Label = "Follow Canary server logs" }
+        "13" = @{ Action = "StartClient"; Label = "Start OTClient" }
+        "14" = @{ Action = "ClientLogs"; Label = "Follow OTClient logs" }
+    }
+
+    while ($true) {
+        Clear-Host
+        Write-Host "Canary + OTClient Update Center" -ForegroundColor Cyan
+        Write-Host "================================" -ForegroundColor DarkCyan
+        Write-Host "Fork: Averuma | origin = personal | upstream = official"
+        Write-Host ""
+        foreach ($key in $menu.Keys) {
+            Write-Host ("[{0,2}] {1}" -f $key, $menu[$key].Label)
+        }
+        Write-Host "[ 0] Exit"
+        Write-Host ""
+
+        $choice = Read-Host "Choose an option"
+        if ($choice -eq "0") {
+            return
+        }
+        if (-not $menu.Contains($choice)) {
+            Write-Host "Invalid option." -ForegroundColor Yellow
+            Read-Host "Press Enter to continue" | Out-Null
+            continue
+        }
+
+        try {
+            Invoke-UpdateCenterAction -SelectedAction $menu[$choice].Action -State $State
+        } catch {
+            Write-Host "`nOperation failed: $($_.Exception.Message)" -ForegroundColor Red
+        }
+
+        Write-Host ""
+        Read-Host "Press Enter to return to the menu" | Out-Null
+    }
+}
+
 $state = Get-State
-switch ($Action) {
-    "Status" {
-        Get-CanaryStatus
-        Get-ClientStatus $state
-        Save-State $state
-    }
-    "Backup" {
-        $destination = New-GeneralBackup
-        Write-Host "Backup completed: $destination" -ForegroundColor Green
-    }
-    "UpdateSource" {
-        Update-Source
-    }
-    "UpdateServer" {
-        Update-Server
-    }
-    "UpdateClient" {
-        Update-Client $state
-    }
-    "UpdateAll" {
-        Update-Server
-        Update-Client $state
-    }
-    "RollbackClient" {
-        Rollback-Client $state
-    }
+if ($Action -eq "Menu") {
+    Show-InteractiveMenu $state
+} else {
+    Invoke-UpdateCenterAction -SelectedAction $Action -State $state
 }

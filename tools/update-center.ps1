@@ -269,6 +269,23 @@ function Apply-ServerOverrides {
     }
 }
 
+function Wait-ContainerHealthy {
+    param(
+        [Parameter(Mandatory)][string]$Container,
+        [int]$TimeoutSeconds = 120
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $status = & docker inspect $Container --format "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}" 2>$null
+        if ($LASTEXITCODE -eq 0 -and $status.Trim() -in @("healthy", "running")) {
+            return
+        }
+        Start-Sleep -Seconds 2
+    }
+    throw "Container $Container did not become healthy within $TimeoutSeconds seconds."
+}
+
 function Update-Server {
     param(
         [switch]$SkipBackup,
@@ -294,12 +311,21 @@ function Update-Server {
         Pop-Location
     }
 
-    Start-Sleep -Seconds 5
+    if ($services -contains "db") {
+        Write-Step "Waiting for MariaDB"
+        Wait-ContainerHealthy "otbr-db-1"
+    } else {
+        Start-Sleep -Seconds 5
+    }
+
     if ($services -contains "server") {
         Apply-ServerOverrides
         Invoke-Native docker @("restart", "otbr-server-1")
         Start-Sleep -Seconds 5
         Invoke-Native docker @("exec", "otbr-server-1", "sh", "-lc", "grep -n '^autoBank' /canary/config.lua")
+    } elseif ($services -contains "db") {
+        Invoke-Native docker @("restart", "otbr-server-1")
+        Start-Sleep -Seconds 5
     }
     if ($backup) {
         Write-Host "Backend updated. Backup: $backup" -ForegroundColor Green

@@ -365,7 +365,10 @@ function Update-Server {
         Invoke-Native docker @("restart", "otbr-server-1")
         Write-Step "Waiting for Canary restart"
         Wait-CanaryOnline
-        Invoke-Native docker @("exec", "otbr-server-1", "sh", "-lc", "grep -n '^autoBank' /canary/config.lua")
+        foreach ($property in $config.serverLuaOverrides.PSObject.Properties) {
+            $name = $property.Name
+            Invoke-Native docker @("exec", "otbr-server-1", "sh", "-lc", "grep -n '^$name[[:space:]]*=' /canary/config.lua")
+        }
     } elseif ($services -contains "db") {
         Invoke-Native docker @("restart", "otbr-server-1")
         Write-Step "Waiting for Canary restart"

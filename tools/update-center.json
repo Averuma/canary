@@ -14,7 +14,8 @@
     "login-server"
   ],
   "serverLuaOverrides": {
-    "autoBank": "true"
+    "autoBank": "true",
+    "coinImagesURL": "\"\""
   },
   "serverOverlayFiles": [
     "data/XML/vocations.xml"

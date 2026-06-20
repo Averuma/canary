@@ -21,7 +21,8 @@ param(
         "SyncCanaryGit",
         "SyncClientGit",
         "SyncAndPublishGit",
-        "FullWorkflow"
+        "FullWorkflow",
+        "SmartUpdate"
     )]
     [string]$Action = "Menu",
     [switch]$Yes
@@ -86,9 +87,43 @@ function Save-State($State) {
     $State | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $stateFile -Encoding UTF8
 }
 
+function Invoke-GitHubJson {
+    param(
+        [Parameter(Mandatory)][string]$Uri,
+        [Parameter(Mandatory)][string]$CacheName
+    )
+
+    $cacheFile = Join-Path $cacheRoot $CacheName
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            $result = Invoke-RestMethod -Headers $githubHeaders -Uri $Uri -TimeoutSec 20
+            $result | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $cacheFile -Encoding UTF8
+            return $result
+        } catch {
+            if ($attempt -lt 3) {
+                Start-Sleep -Seconds (2 * $attempt)
+            }
+        }
+    }
+
+    $apiPath = $Uri -replace "^https://api\.github\.com/", ""
+    $ghOutput = & gh api $apiPath 2>$null
+    if ($LASTEXITCODE -eq 0 -and $ghOutput) {
+        $result = ($ghOutput -join "`n") | ConvertFrom-Json
+        $result | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $cacheFile -Encoding UTF8
+        return $result
+    }
+
+    if (Test-Path -LiteralPath $cacheFile) {
+        Write-Host "GitHub API unavailable; using cached release metadata." -ForegroundColor Yellow
+        return Get-Content -LiteralPath $cacheFile -Raw | ConvertFrom-Json
+    }
+    throw "GitHub API is unavailable and no cached release metadata exists."
+}
+
 function Get-LatestClientRelease {
     $uri = "https://api.github.com/repos/$($config.clientRepository)/releases/latest"
-    return Invoke-RestMethod -Headers $githubHeaders -Uri $uri
+    return Invoke-GitHubJson -Uri $uri -CacheName "otclient-latest-release.json"
 }
 
 function Get-ReleaseAsset($Release) {
@@ -101,27 +136,46 @@ function Get-ReleaseAsset($Release) {
 
 function Get-ReleaseByTag([string]$Tag) {
     $uri = "https://api.github.com/repos/$($config.clientRepository)/releases/tags/$Tag"
-    return Invoke-RestMethod -Headers $githubHeaders -Uri $uri
+    return Invoke-GitHubJson -Uri $uri -CacheName "otclient-release-$Tag.json"
 }
 
-function Get-RemoteImageDigest([string]$Image) {
-    $output = & docker buildx imagetools inspect $Image --format "{{json .Manifest.Digest}}"
-    if ($LASTEXITCODE -ne 0) {
+function Get-RemoteImageId([string]$Image) {
+    $output = & docker buildx imagetools inspect $Image --format "{{json .Manifest.Digest}}" 2>$null
+    if ($LASTEXITCODE -ne 0 -or -not $output) {
         return $null
     }
     return ($output -replace '"', '').Trim()
 }
 
-function Get-LocalImageDigest([string]$Image) {
-    $output = & docker image inspect $Image --format "{{json .RepoDigests}}" 2>$null
+function Get-LocalImageId([string]$Image) {
+    $output = & docker image inspect $Image --format "{{.Id}}" 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $output) {
         return $null
     }
-    $digests = $output | ConvertFrom-Json
-    if (-not $digests -or $digests.Count -eq 0) {
-        return $null
+    return $output.Trim()
+}
+
+function Get-DockerImageStatus {
+    $definitions = @(
+        @{ Service = "server"; Image = "ghcr.io/opentibiabr/canary:latest" },
+        @{ Service = "db"; Image = "mariadb:11.4" },
+        @{ Service = "login-server"; Image = "opentibiabr/login-server:latest" }
+    )
+
+    $result = @()
+    foreach ($definition in $definitions) {
+        $local = Get-LocalImageId $definition.Image
+        $remote = Get-RemoteImageId $definition.Image
+        $result += [pscustomobject]@{
+            Service = $definition.Service
+            Image = $definition.Image
+            Local = $local
+            Remote = $remote
+            UpdateAvailable = [bool]($local -and $remote -and $local -ne $remote)
+            Unknown = [bool](-not $local -or -not $remote)
+        }
     }
-    return ($digests[0] -split "@", 2)[1]
+    return $result
 }
 
 function Get-CanaryStatus {
@@ -133,18 +187,17 @@ function Get-CanaryStatus {
     Write-Host "Local-only commits: $($distance[0]); upstream commits available: $($distance[1])"
 
     Write-Step "Docker images"
-    $images = @(
-        "ghcr.io/opentibiabr/canary:latest",
-        "mariadb:11.4",
-        "opentibiabr/login-server:latest"
-    )
-    foreach ($image in $images) {
-        $local = Get-LocalImageDigest $image
-        $remote = Get-RemoteImageDigest $image
-        $status = if ($local -and $remote -and $local -eq $remote) { "current" } else { "update available" }
-        $localDisplay = if ($local) { $local } else { "not installed" }
-        $remoteDisplay = if ($remote) { $remote } else { "unavailable" }
-        Write-Host ("{0}: {1}" -f $image, $status)
+    foreach ($imageStatus in Get-DockerImageStatus) {
+        $status = if ($imageStatus.UpdateAvailable) {
+            "update available"
+        } elseif ($imageStatus.Unknown) {
+            "unable to verify"
+        } else {
+            "current"
+        }
+        $localDisplay = if ($imageStatus.Local) { $imageStatus.Local } else { "not installed" }
+        $remoteDisplay = if ($imageStatus.Remote) { $imageStatus.Remote } else { "unavailable" }
+        Write-Host ("{0}: {1}" -f $imageStatus.Image, $status)
         Write-Host ("  local:  {0}" -f $localDisplay)
         Write-Host ("  remote: {0}" -f $remoteDisplay)
     }
@@ -217,7 +270,10 @@ function Apply-ServerOverrides {
 }
 
 function Update-Server {
-    param([switch]$SkipBackup)
+    param(
+        [switch]$SkipBackup,
+        [string[]]$Services
+    )
 
     Confirm-Update "Pull and recreate updated backend containers?"
     $backup = $null
@@ -227,7 +283,11 @@ function Update-Server {
     Write-Step "Updating backend containers"
     Push-Location $canaryRoot
     try {
-        $services = [string[]]$config.dockerServices
+        $services = if ($Services -and $Services.Count -gt 0) {
+            [string[]]$Services
+        } else {
+            [string[]]$config.dockerServices
+        }
         Invoke-Native docker (@("compose", "-f", $composeFile, "pull") + $services)
         Invoke-Native docker (@("compose", "-f", $composeFile, "up", "-d", "--no-deps", "--force-recreate") + $services)
     } finally {
@@ -235,10 +295,12 @@ function Update-Server {
     }
 
     Start-Sleep -Seconds 5
-    Apply-ServerOverrides
-    Invoke-Native docker @("restart", "otbr-server-1")
-    Start-Sleep -Seconds 5
-    Invoke-Native docker @("exec", "otbr-server-1", "sh", "-lc", "grep -n '^autoBank' /canary/config.lua")
+    if ($services -contains "server") {
+        Apply-ServerOverrides
+        Invoke-Native docker @("restart", "otbr-server-1")
+        Start-Sleep -Seconds 5
+        Invoke-Native docker @("exec", "otbr-server-1", "sh", "-lc", "grep -n '^autoBank' /canary/config.lua")
+    }
     if ($backup) {
         Write-Host "Backend updated. Backup: $backup" -ForegroundColor Green
     } else {
@@ -606,8 +668,6 @@ function Sync-ClientGit($State) {
 
     Confirm-Update "Merge official OTClient release $tag into $branch?"
     Invoke-Native git @("-C", $config.clientPath, "merge", "--no-edit", "refs/tags/$tag")
-    $State.clientVersion = $tag
-    Save-State $State
     Write-Host "OTClient branch synchronized with release $tag. Review and test it before publishing." -ForegroundColor Green
 }
 
@@ -619,57 +679,105 @@ function Sync-And-PublishGit($State) {
     Publish-WorkingBranches
 }
 
-function Invoke-FullWorkflow($State) {
-    Write-Host "This workflow will:" -ForegroundColor Cyan
-    Write-Host "  1. Check versions and Git status"
-    Write-Host "  2. Require clean Canary and OTClient worktrees"
-    Write-Host "  3. Back up MariaDB and OTClient user data"
-    Write-Host "  4. Synchronize Canary with upstream/main"
-    Write-Host "  5. Synchronize OTClient with the latest official release"
-    Write-Host "  6. Publish both dudantas/* branches to your GitHub"
-    Write-Host "  7. Update backend Docker images and restart Canary"
-    Write-Host "  8. Run a final status check"
-    Write-Host ""
-    Confirm-Update "Run the complete update workflow?"
+function Get-SmartUpdatePlan($State) {
+    Invoke-Native git @("-C", $canaryRoot, "fetch", "--prune", "upstream")
+    Invoke-Native git @("-C", $canaryRoot, "fetch", "--prune", "origin")
+    Invoke-Native git @("-C", $config.clientPath, "fetch", "--prune", "upstream", "--tags")
+    Invoke-Native git @("-C", $config.clientPath, "fetch", "--prune", "origin")
+
+    $canaryBehind = [int]((& git -C $canaryRoot rev-list --count "HEAD..upstream/main").Trim())
+    $canaryAheadOrigin = [int]((& git -C $canaryRoot rev-list --count "@{upstream}..HEAD").Trim())
+    $clientAheadOrigin = [int]((& git -C $config.clientPath rev-list --count "@{upstream}..HEAD").Trim())
+    $release = Get-LatestClientRelease
+    $clientTag = [string]$release.tag_name
+    & git -C $config.clientPath merge-base --is-ancestor "refs/tags/$clientTag" HEAD
+    $clientSourceNeedsUpdate = $LASTEXITCODE -ne 0
+    $clientRuntimeNeedsUpdate = [string]$State.clientVersion -ne $clientTag
+    $dockerStatuses = @(Get-DockerImageStatus)
+    $dockerServices = @($dockerStatuses | Where-Object { $_.UpdateAvailable } | ForEach-Object { $_.Service })
+
+    return [pscustomobject]@{
+        CanaryBehind = $canaryBehind
+        CanaryAheadOrigin = $canaryAheadOrigin
+        ClientTag = $clientTag
+        ClientSourceNeedsUpdate = $clientSourceNeedsUpdate
+        ClientRuntimeNeedsUpdate = $clientRuntimeNeedsUpdate
+        ClientAheadOrigin = $clientAheadOrigin
+        DockerStatuses = $dockerStatuses
+        DockerServices = $dockerServices
+        NeedsBackup = [bool]($clientRuntimeNeedsUpdate -or $dockerServices.Count -gt 0)
+        HasWork = [bool](
+            $canaryBehind -gt 0 -or
+            $clientSourceNeedsUpdate -or
+            $clientRuntimeNeedsUpdate -or
+            $dockerServices.Count -gt 0 -or
+            $canaryAheadOrigin -gt 0 -or
+            $clientAheadOrigin -gt 0
+        )
+    }
+}
+
+function Show-SmartUpdatePlan($Plan) {
+    Write-Step "Smart update plan"
+    Write-Host ("Canary official commits: {0}" -f $(if ($Plan.CanaryBehind -gt 0) { $Plan.CanaryBehind } else { "current" }))
+    Write-Host ("OTClient source: {0}" -f $(if ($Plan.ClientSourceNeedsUpdate) { "merge release $($Plan.ClientTag)" } else { "current" }))
+    Write-Host ("OTClient runtime: {0}" -f $(if ($Plan.ClientRuntimeNeedsUpdate) { "install release $($Plan.ClientTag)" } else { "current" }))
+    Write-Host ("Docker services: {0}" -f $(if ($Plan.DockerServices.Count -gt 0) { $Plan.DockerServices -join ", " } else { "current" }))
+    Write-Host ("Canary commits to publish: {0}" -f $Plan.CanaryAheadOrigin)
+    Write-Host ("OTClient commits to publish: {0}" -f $Plan.ClientAheadOrigin)
+    Write-Host ("Backup required: {0}" -f $(if ($Plan.NeedsBackup) { "yes" } else { "no" }))
+}
+
+function Invoke-SmartUpdate($State) {
+    Write-Step "Preflight"
+    Assert-CleanGitWorktree $canaryRoot "Canary"
+    Assert-CleanGitWorktree $config.clientPath "OTClient"
+    Assert-WorkingBranch $canaryRoot "Canary" | Out-Null
+    Assert-WorkingBranch $config.clientPath "OTClient" | Out-Null
+
+    $plan = Get-SmartUpdatePlan $State
+    Show-SmartUpdatePlan $plan
+    if (-not $plan.HasWork) {
+        Write-Host "`nEverything is already current." -ForegroundColor Green
+        return
+    }
+
+    Confirm-Update "Apply this smart update plan?"
     $script:WorkflowConfirmed = $true
-
     try {
-        Write-Step "Phase 1/8 - Current status"
-        Get-CanaryStatus
-        Get-ClientStatus $State
-        Show-GitStatus
+        if ($plan.NeedsBackup) {
+            $backup = New-GeneralBackup
+            Write-Host "Backup completed: $backup" -ForegroundColor Green
+        }
+        if ($plan.CanaryBehind -gt 0) {
+            Sync-CanaryGit
+        }
+        if ($plan.ClientSourceNeedsUpdate) {
+            Sync-ClientGit $State
+        }
+        if ($plan.ClientRuntimeNeedsUpdate) {
+            Update-Client $State
+        }
 
-        Write-Step "Phase 2/8 - Safety checks"
-        Assert-CleanGitWorktree $canaryRoot "Canary"
-        Assert-CleanGitWorktree $config.clientPath "OTClient"
-        Assert-WorkingBranch $canaryRoot "Canary" | Out-Null
-        Assert-WorkingBranch $config.clientPath "OTClient" | Out-Null
-        Write-Host "Both worktrees are clean and on working branches." -ForegroundColor Green
+        $publishCanary = [int]((& git -C $canaryRoot rev-list --count "@{upstream}..HEAD").Trim()) -gt 0
+        $publishClient = [int]((& git -C $config.clientPath rev-list --count "@{upstream}..HEAD").Trim()) -gt 0
+        if ($publishCanary) {
+            Publish-GitBranch $canaryRoot "Canary"
+        }
+        if ($publishClient) {
+            Publish-GitBranch $config.clientPath "OTClient"
+        }
+        if ($plan.DockerServices.Count -gt 0) {
+            Update-Server -SkipBackup -Services $plan.DockerServices
+        }
 
-        Write-Step "Phase 3/8 - Backup"
-        $backup = New-GeneralBackup
-        Write-Host "Backup completed: $backup" -ForegroundColor Green
-
-        Write-Step "Phase 4/8 - Canary source synchronization"
-        Sync-CanaryGit
-
-        Write-Step "Phase 5/8 - OTClient release synchronization"
-        Sync-ClientGit $State
-
-        Write-Step "Phase 6/8 - GitHub publication"
-        Publish-WorkingBranches
-
-        Write-Step "Phase 7/8 - Backend runtime update"
-        Update-Server -SkipBackup
-
-        Write-Step "Phase 8/8 - Final verification"
+        Write-Step "Final verification"
         Get-CanaryStatus
         Get-ClientStatus $State
         Show-ServerStatus
         Show-GitStatus
         Save-State $State
-
-        Write-Host "`nComplete workflow finished successfully." -ForegroundColor Green
+        Write-Host "`nSmart update completed successfully." -ForegroundColor Green
     } finally {
         $script:WorkflowConfirmed = $false
     }
@@ -744,67 +852,110 @@ function Invoke-UpdateCenterAction {
             Sync-And-PublishGit $State
         }
         "FullWorkflow" {
-            Invoke-FullWorkflow $State
+            Invoke-SmartUpdate $State
         }
+        "SmartUpdate" {
+            Invoke-SmartUpdate $State
+        }
+    }
+}
+
+function Invoke-MenuAction {
+    param(
+        [Parameter(Mandatory)][string]$SelectedAction,
+        [Parameter(Mandatory)]$State
+    )
+
+    try {
+        Invoke-UpdateCenterAction -SelectedAction $SelectedAction -State $State
+    } catch {
+        Write-Host "`nOperation failed: $($_.Exception.Message)" -ForegroundColor Red
+    }
+    Write-Host ""
+    Read-Host "Press Enter to continue" | Out-Null
+}
+
+function Show-ServerMenu {
+    param([Parameter(Mandatory)]$State)
+    while ($true) {
+        Clear-Host
+        Write-Host "Server and Client" -ForegroundColor Cyan
+        Write-Host "[1] Show backend services"
+        Write-Host "[2] Start backend"
+        Write-Host "[3] Restart Canary"
+        Write-Host "[4] Stop backend"
+        Write-Host "[5] Canary live logs"
+        Write-Host "[6] Start OTClient"
+        Write-Host "[7] OTClient live logs"
+        Write-Host "[0] Back"
+        $choice = Read-Host "Choose"
+        $actions = @{ "1" = "ServerStatus"; "2" = "StartServer"; "3" = "RestartServer"; "4" = "StopServer"; "5" = "ServerLogs"; "6" = "StartClient"; "7" = "ClientLogs" }
+        if ($choice -eq "0") { return }
+        if ($actions[$choice]) { Invoke-MenuAction $actions[$choice] $State }
+    }
+}
+
+function Show-GitMenu {
+    param([Parameter(Mandatory)]$State)
+    while ($true) {
+        Clear-Host
+        Write-Host "Git and GitHub" -ForegroundColor Cyan
+        Write-Host "[1] Show both repositories"
+        Write-Host "[2] Publish committed changes"
+        Write-Host "[3] Sync Canary with official upstream"
+        Write-Host "[4] Sync OTClient with latest release"
+        Write-Host "[5] Sync and publish both"
+        Write-Host "[0] Back"
+        $choice = Read-Host "Choose"
+        $actions = @{ "1" = "GitStatus"; "2" = "PublishBranches"; "3" = "SyncCanaryGit"; "4" = "SyncClientGit"; "5" = "SyncAndPublishGit" }
+        if ($choice -eq "0") { return }
+        if ($actions[$choice]) { Invoke-MenuAction $actions[$choice] $State }
+    }
+}
+
+function Show-AdvancedMenu {
+    param([Parameter(Mandatory)]$State)
+    while ($true) {
+        Clear-Host
+        Write-Host "Advanced Operations" -ForegroundColor Cyan
+        Write-Host "[1] Update backend Docker only"
+        Write-Host "[2] Update OTClient runtime only"
+        Write-Host "[3] Sync Canary source only"
+        Write-Host "[4] Rollback last OTClient runtime update"
+        Write-Host "[0] Back"
+        $choice = Read-Host "Choose"
+        $actions = @{ "1" = "UpdateServer"; "2" = "UpdateClient"; "3" = "UpdateSource"; "4" = "RollbackClient" }
+        if ($choice -eq "0") { return }
+        if ($actions[$choice]) { Invoke-MenuAction $actions[$choice] $State }
     }
 }
 
 function Show-InteractiveMenu {
     param([Parameter(Mandatory)]$State)
 
-    $menu = [ordered]@{
-        "1" = @{ Action = "Status"; Label = "Check all updates and versions" }
-        "2" = @{ Action = "Backup"; Label = "Create database and OTClient backup" }
-        "3" = @{ Action = "UpdateSource"; Label = "Sync current Canary branch with official upstream" }
-        "4" = @{ Action = "UpdateServer"; Label = "Update backend Docker images" }
-        "5" = @{ Action = "UpdateClient"; Label = "Update OTClient official release" }
-        "6" = @{ Action = "UpdateAll"; Label = "Update backend and OTClient" }
-        "7" = @{ Action = "RollbackClient"; Label = "Rollback last OTClient update" }
-        "8" = @{ Action = "ServerStatus"; Label = "Show backend services" }
-        "9" = @{ Action = "StartServer"; Label = "Start backend stack" }
-        "10" = @{ Action = "RestartServer"; Label = "Restart Canary server" }
-        "11" = @{ Action = "StopServer"; Label = "Stop backend stack" }
-        "12" = @{ Action = "ServerLogs"; Label = "Follow Canary server logs" }
-        "13" = @{ Action = "StartClient"; Label = "Start OTClient" }
-        "14" = @{ Action = "ClientLogs"; Label = "Follow OTClient logs" }
-        "15" = @{ Action = "GitStatus"; Label = "Show Git status for both projects" }
-        "16" = @{ Action = "PublishBranches"; Label = "Publish both current branches to GitHub" }
-        "17" = @{ Action = "SyncCanaryGit"; Label = "Merge official Canary updates into current branch" }
-        "18" = @{ Action = "SyncClientGit"; Label = "Merge latest OTClient release into current branch" }
-        "19" = @{ Action = "SyncAndPublishGit"; Label = "Sync and publish both projects" }
-        "20" = @{ Action = "FullWorkflow"; Label = "Run complete safe update workflow" }
-    }
-
     while ($true) {
         Clear-Host
         Write-Host "Canary + OTClient Update Center" -ForegroundColor Cyan
         Write-Host "================================" -ForegroundColor DarkCyan
-        Write-Host "Fork: Averuma | origin = personal | upstream = official"
-        Write-Host ""
-        foreach ($key in $menu.Keys) {
-            Write-Host ("[{0,2}] {1}" -f $key, $menu[$key].Label)
-        }
-        Write-Host "[ 0] Exit"
+        Write-Host "[1] Smart Update (recommended)" -ForegroundColor Green
+        Write-Host "[2] Check status"
+        Write-Host "[3] Create backup"
+        Write-Host "[4] Server and client"
+        Write-Host "[5] Git and GitHub"
+        Write-Host "[6] Advanced"
+        Write-Host "[0] Exit"
         Write-Host ""
 
-        $choice = Read-Host "Choose an option"
-        if ($choice -eq "0") {
-            return
+        $choice = Read-Host "Choose"
+        switch ($choice) {
+            "0" { return }
+            "1" { Invoke-MenuAction "SmartUpdate" $State }
+            "2" { Invoke-MenuAction "Status" $State }
+            "3" { Invoke-MenuAction "Backup" $State }
+            "4" { Show-ServerMenu $State }
+            "5" { Show-GitMenu $State }
+            "6" { Show-AdvancedMenu $State }
         }
-        if (-not $menu.Contains($choice)) {
-            Write-Host "Invalid option." -ForegroundColor Yellow
-            Read-Host "Press Enter to continue" | Out-Null
-            continue
-        }
-
-        try {
-            Invoke-UpdateCenterAction -SelectedAction $menu[$choice].Action -State $State
-        } catch {
-            Write-Host "`nOperation failed: $($_.Exception.Message)" -ForegroundColor Red
-        }
-
-        Write-Host ""
-        Read-Host "Press Enter to return to the menu" | Out-Null
     }
 }
 

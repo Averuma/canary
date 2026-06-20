@@ -169,7 +169,7 @@
         }
       },
       {
-        "label": "Updates: Update backend and client",
+        "label": "Updates: Smart update everything",
         "type": "shell",
         "command": "powershell.exe",
         "args": [
@@ -179,7 +179,7 @@
           "-File",
           "${workspaceFolder:Canary Server}\\tools\\update-center.ps1",
           "-Action",
-          "UpdateAll"
+          "SmartUpdate"
         ],
         "problemMatcher": [],
         "presentation": {

@@ -14,9 +14,8 @@ Run these commands from PowerShell:
 .\tools\update-center.cmd -Action UpdateSource
 .\tools\update-center.cmd -Action UpdateServer
 .\tools\update-center.cmd -Action UpdateClient
-.\tools\update-center.cmd -Action UpdateAll
+.\tools\update-center.cmd -Action SmartUpdate
 .\tools\update-center.cmd -Action RollbackClient
-.\tools\update-center.cmd -Action FullWorkflow
 ```
 
 Running the command without arguments opens an interactive terminal menu.
@@ -51,21 +50,22 @@ branches, and synchronize them with their official sources:
 - the updater never pushes to `origin/main` or to the official `upstream`;
 - operations stop when either worktree contains uncommitted changes.
 
-## Complete workflow
+## Smart update
 
-Menu option `20`, or `-Action FullWorkflow`, runs the guarded sequence:
+The recommended menu option is `1 - Smart Update`. It calculates a plan before
+changing anything and performs only the required work:
 
-1. version and Git status;
-2. clean-worktree and branch validation;
-3. MariaDB and OTClient user-data backup;
-4. Canary synchronization with `upstream/main`;
-5. OTClient synchronization with the latest official release;
-6. publication of both `dudantas/*` branches;
-7. backend Docker image update and Canary restart;
-8. final service, version, and Git verification.
+- verifies both Git worktrees and working branches;
+- detects new Canary commits and the latest OTClient release;
+- compares Docker image IDs for the local Linux/AMD64 platform;
+- creates one backup only when runtime files or containers will change;
+- synchronizes and publishes only repositories with new commits;
+- recreates only Docker services whose images changed;
+- skips every component that is already current;
+- stops immediately on a dirty worktree, conflict, or failed command;
+- finishes with Git, version, container, and service verification.
 
-The cascade stops immediately when any phase fails. Destructive phases still
-request confirmation unless `-Yes` is explicitly supplied.
+It asks for a single confirmation after showing the calculated plan.
 
 ## Client behavior
 
@@ -100,5 +100,4 @@ Open `Canary-OTClient.code-workspace` to load the Canary repository and
 - live Canary and OTClient logs;
 - OTClient launch and user-data folder access.
 
-Update tasks remain interactive and ask for confirmation before changing the
-runtime.
+The `Updates: Smart update everything` task uses the same calculated plan.

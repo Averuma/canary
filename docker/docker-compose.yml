@@ -33,6 +33,7 @@ services:
       CANARY_GAME_PORT: "${CANARY_GAME_PORT:-7172}"
       CANARY_STATUS_PORT: "${CANARY_STATUS_PORT:-7173}"
       CANARY_STATUS_TIMEOUT: "${CANARY_STATUS_TIMEOUT:-5000}"
+      CANARY_RATE_ATTACK_SPEED: "${CANARY_RATE_ATTACK_SPEED:-1.0}"
       CANARY_TEST_ACCOUNTS: "${CANARY_TEST_ACCOUNTS:-true}"
       CANARY_DATA_PACK: "${CANARY_DATA_PACK:-data-otservbr-global}"
       CANARY_MAP_URL: "${CANARY_MAP_URL:-https://github.com/opentibiabr/canary/releases/download/v3.6.0/otservbr.otbm}"
@@ -58,6 +59,7 @@ services:
       - '${CANARY_STATUS_PORT:-7173}:${CANARY_STATUS_PORT:-7173}'
     volumes:
       - 'server-data:/data'
+      - './data/start.sh:/canary/start.sh:ro'
     depends_on:
       db:
         condition: service_healthy

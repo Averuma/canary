@@ -92,6 +92,8 @@ services:
       MYAAC_TIMEZONE: "${MYAAC_TIMEZONE:-America/Fortaleza}"
     ports:
       - '${MYAAC_HTTP_PORT:-8080}:80'
+    volumes:
+      - '../data/json/eventscheduler/events.json:/canary/events.json:ro'
     networks:
       - canary-net
     depends_on:

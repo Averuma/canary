@@ -6,6 +6,45 @@ header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 
 try {
+	$request = json_decode(file_get_contents('php://input') ?: '{}', true);
+	$requestType = is_array($request) ? ($request['type'] ?? '') : '';
+
+	if ($requestType === 'eventschedule') {
+		$eventFile = '/canary/events.json';
+		$eventData = is_file($eventFile)
+			? json_decode(file_get_contents($eventFile) ?: '{}', true, 512, JSON_THROW_ON_ERROR)
+			: [];
+		$events = [];
+
+		foreach ($eventData['events'] ?? [] as $event) {
+			$start = DateTimeImmutable::createFromFormat('!m/d/Y', (string) ($event['startdate'] ?? ''));
+			$end = DateTimeImmutable::createFromFormat('!m/d/Y', (string) ($event['enddate'] ?? ''));
+			if (!$start || !$end) {
+				continue;
+			}
+
+			$colors = $event['colors'] ?? [];
+			$details = $event['details'] ?? [];
+			$events[] = [
+				'name' => (string) ($event['name'] ?? 'Unnamed Event'),
+				'description' => (string) ($event['description'] ?? ''),
+				'startdate' => $start->getTimestamp(),
+				'enddate' => $end->setTime(23, 59, 59)->getTimestamp(),
+				'colordark' => (string) ($colors['colordark'] ?? '#303030'),
+				'colorlight' => (string) ($colors['colorlight'] ?? '#606060'),
+				'displaypriority' => (int) ($details['displaypriority'] ?? 5),
+				'isseasonal' => (int) ($details['isseasonal'] ?? 0),
+				'specialevent' => (int) ($details['specialevent'] ?? 0),
+			];
+		}
+
+		echo json_encode([
+			'lastupdatetimestamp' => time(),
+			'eventlist' => $events,
+		], JSON_THROW_ON_ERROR);
+		exit;
+	}
+
 	$host = getenv('CANARY_DB_HOST') ?: 'db';
 	$port = getenv('CANARY_DB_PORT') ?: '3306';
 	$database = getenv('CANARY_DB_NAME') ?: 'canary';
